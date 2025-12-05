@@ -1,0 +1,604 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JARVIS AR 隔空绘图系统</title>
+    <!-- 引入科幻字体 -->
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+    
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background-color: #000; 
+            font-family: 'Orbitron', sans-serif;
+        }
+        
+        /* --- 1. 视频背景层 (科幻处理) --- */
+        #input_video {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* 镜像翻转，像照镜子一样 */
+            filter: contrast(1.1) brightness(0.8) saturate(1.2); /*稍微压暗背景，让字更亮 */
+            z-index: 0;
+        }
+
+        /* --- 2. 科幻 HUD 装饰层 --- */
+        #hud-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            z-index: 1;
+            /* 网格线背景 */
+            background: 
+                linear-gradient(rgba(0, 255, 255, 0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 255, 255, 0.05) 1px, transparent 1px);
+            background-size: 50px 50px;
+            box-shadow: inset 0 0 100px rgba(0,0,0,0.9); /* 四周暗角 */
+        }
+
+        /* 扫描线动画 */
+        #hud-overlay::after {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 5px;
+            background: rgba(0, 255, 255, 0.3);
+            opacity: 0.5;
+            box-shadow: 0 0 10px rgba(0, 255, 255, 0.8);
+            animation: scan 4s linear infinite;
+        }
+
+        @keyframes scan {
+            0% { top: -5%; }
+            100% { top: 105%; }
+        }
+
+        /* 装饰角落 */
+        .corner {
+            position: absolute;
+            width: 50px; height: 50px;
+            border: 2px solid #00ffff;
+            box-shadow: 0 0 10px #00ffff;
+        }
+        .tl { top: 20px; left: 20px; border-right: none; border-bottom: none; }
+        .tr { top: 20px; right: 20px; border-left: none; border-bottom: none; }
+        .bl { bottom: 20px; left: 20px; border-right: none; border-top: none; }
+        .br { bottom: 20px; right: 20px; border-left: none; border-top: none; }
+
+        /* --- 3. 画布层 --- */
+        canvas { position: absolute; top: 0; left: 0; }
+        #draw-canvas { z-index: 2; } /* 笔迹在装饰层之上 */
+        #ui-canvas { z-index: 3; pointer-events: none; } /* 手势光标 */
+        
+        /* --- 4. UI 面板 (机甲风格) --- */
+        #ui-panel {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%) scale(0);
+            width: 450px;
+            background: rgba(10, 20, 30, 0.85); /* 深蓝半透明 */
+            border: 1px solid rgba(0, 255, 255, 0.5);
+            backdrop-filter: blur(10px);
+            padding: 25px;
+            clip-path: polygon(10% 0, 100% 0, 100% 90%, 90% 100%, 0 100%, 0 10%); /* 切角形状 */
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            z-index: 10;
+            transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+            pointer-events: none;
+        }
+
+        #ui-panel.active {
+            transform: translate(-50%, -50%) scale(1);
+        }
+
+        #ui-panel::before {
+            content: 'SYSTEM_CONFIG';
+            position: absolute;
+            top: -20px; left: 0;
+            color: #00ffff;
+            font-size: 0.8rem;
+            letter-spacing: 2px;
+        }
+
+        .ui-row { display: flex; justify-content: space-between; align-items: center; }
+        h2 { color: #00ffff; margin: 0 0 10px 0; text-align: center; font-size: 1.2rem; text-transform: uppercase; letter-spacing: 3px; text-shadow: 0 0 10px rgba(0,255,255,0.5); }
+        
+        /* 按钮样式 */
+        .btn {
+            background: rgba(0, 255, 255, 0.1);
+            border: 1px solid rgba(0, 255, 255, 0.3);
+            color: #ccc;
+            padding: 12px 20px;
+            text-align: center;
+            flex: 1;
+            margin: 0 5px;
+            transition: all 0.2s;
+            position: relative;
+            overflow: hidden;
+            font-family: 'Share Tech Mono', monospace;
+            clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
+        }
+
+        .btn.selected { 
+            border-color: #00ffff; 
+            background: rgba(0, 255, 255, 0.3); 
+            color: #fff;
+            box-shadow: 0 0 15px rgba(0, 255, 255, 0.3);
+        }
+        
+        /* 进度条 */
+        .progress-bar {
+            position: absolute; bottom: 0; left: 0; height: 3px; width: 0%;
+            background: #00ffff;
+            box-shadow: 0 0 5px #00ffff;
+            transition: width 0.1s linear;
+        }
+
+        /* 颜色选择 */
+        .color-opt { width: 40px; height: 40px; border: 2px solid rgba(255,255,255,0.2); transform: skewX(-10deg); transition: transform 0.2s; }
+        .color-opt.selected { border-color: #fff; transform: skewX(-10deg) scale(1.2); box-shadow: 0 0 10px currentColor; }
+
+        /* 滑块 */
+        .slider-container { width: 100%; height: 6px; background: rgba(255,255,255,0.1); position: relative; margin-top: 10px; border: 1px solid rgba(0,255,255,0.2); }
+        .slider-fill { height: 100%; background: #00ffff; width: 50%; box-shadow: 0 0 10px #00ffff; }
+
+        /* 状态栏 */
+        #status-bar {
+            position: absolute; top: 30px; left: 50%; transform: translateX(-50%);
+            color: #00ffff; font-family: 'Share Tech Mono', monospace; font-size: 1rem; z-index: 5;
+            background: rgba(0, 10, 20, 0.7); padding: 8px 30px; 
+            border: 1px solid rgba(0, 255, 255, 0.3);
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            display: flex; gap: 20px;
+            clip-path: polygon(20px 0, 100% 0, 100% 100%, 0 100%, 0 20px);
+        }
+        
+        #loading {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            color: #00ffff; font-size: 1.5rem; z-index: 100; text-shadow: 0 0 10px #00ffff;
+            background: rgba(0,0,0,0.8); padding: 20px; border: 1px solid #00ffff;
+        }
+    </style>
+
+    <!-- MediaPipe Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="loading">SYSTEM INITIALIZING...</div>
+    
+    <!-- 1. 视频背景 -->
+    <video id="input_video"></video>
+    
+    <!-- 2. HUD 装饰层 -->
+    <div id="hud-overlay">
+        <div class="corner tl"></div>
+        <div class="corner tr"></div>
+        <div class="corner bl"></div>
+        <div class="corner br"></div>
+    </div>
+
+    <!-- 状态栏 -->
+    <div id="status-bar">
+        <span id="status-mode">MODE: STANDBY</span>
+        <span style="color:#555">|</span>
+        <span id="status-gesture">NO SIGNAL</span>
+    </div>
+
+    <!-- 3. UI 面板 -->
+    <div id="ui-panel">
+        <h2>TOOLKIT</h2>
+        <div class="ui-row">
+            <div class="btn selected" id="btn-pen" data-action="mode" data-value="pen">PEN<div class="progress-bar"></div></div>
+            <div class="btn" id="btn-eraser" data-action="mode" data-value="eraser">ERASER<div class="progress-bar"></div></div>
+        </div>
+        
+        <div class="ui-row" style="margin-top: 10px;">
+            <div class="color-opt selected" style="background:#00ffff; box-shadow:0 0 10px #00ffff" data-action="color" data-value="#00ffff"></div>
+            <div class="color-opt" style="background:#ff0055; box-shadow:0 0 10px #ff0055" data-action="color" data-value="#ff0055"></div>
+            <div class="color-opt" style="background:#ffff00; box-shadow:0 0 10px #ffff00" data-action="color" data-value="#ffff00"></div>
+            <div class="color-opt" style="background:#ffffff; box-shadow:0 0 10px #ffffff" data-action="color" data-value="#ffffff"></div>
+        </div>
+
+        <div class="ui-row" style="flex-direction: column; align-items: flex-start;">
+            <span style="color:#00aaaa; font-size:0.8rem; margin-top:10px;">BRUSH INTENSITY (HOVER L/R)</span>
+            <div class="slider-container" id="size-slider">
+                <div class="slider-fill" id="size-fill"></div>
+            </div>
+            <div style="display:flex; width:100%; height:30px; margin-top:-15px; z-index:2;">
+                <div class="btn" style="opacity:0;" data-action="size" data-value="down"><div class="progress-bar"></div></div>
+                <div class="btn" style="opacity:0;" data-action="size" data-value="up"><div class="progress-bar"></div></div>
+            </div>
+        </div>
+    </div>
+
+    <canvas id="draw-canvas"></canvas>
+    <canvas id="ui-canvas"></canvas>
+
+    <script>
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('draw-canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const uiCanvas = document.getElementById('ui-canvas');
+        const uiCtx = uiCanvas.getContext('2d');
+        const uiPanel = document.getElementById('ui-panel');
+        const statusMode = document.getElementById('status-mode');
+        const statusGesture = document.getElementById('status-gesture');
+
+        let strokes = []; 
+        let currentStroke = null;
+        let particles = [];
+        
+        let settings = {
+            color: '#00ffff',
+            size: 8, // 稍微粗一点，配合发光效果
+            mode: 'pen',
+            canvasScale: 1
+        };
+
+        // 手势状态
+        let isMenuOpen = false;
+        let lastMenuToggleTime = 0;
+        let hoverTarget = null;
+        let hoverStartTime = 0;
+        const HOVER_THRESHOLD = 800;
+        
+        let initialPinchDistance = null;
+        let initialScale = 1;
+
+        function resize() {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+            uiCanvas.width = window.innerWidth;
+            uiCanvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // 粒子类
+        class Particle {
+            constructor(x, y, color) {
+                this.x = x;
+                this.y = y;
+                this.color = color;
+                this.vx = (Math.random() - 0.5) * 5;
+                this.vy = (Math.random() * 3) + 2;
+                this.alpha = 1;
+                this.size = Math.random() * 3 + 1;
+            }
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                this.alpha -= 0.015;
+                this.vx += Math.sin(this.y * 0.1) * 0.1;
+            }
+            draw(ctx) {
+                ctx.globalAlpha = this.alpha;
+                ctx.fillStyle = this.color;
+                ctx.shadowBlur = 10; // 粒子发光
+                ctx.shadowColor = this.color;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.shadowBlur = 0;
+                ctx.globalAlpha = 1;
+            }
+        }
+
+        function distance(p1, p2) {
+            return Math.sqrt(Math.pow(p1.x - p2.x, 2) + Math.pow(p1.y - p2.y, 2));
+        }
+
+        function toScreen(landmark) {
+            return {
+                x: (1 - landmark.x) * window.innerWidth, // 镜像
+                y: landmark.y * window.innerHeight
+            };
+        }
+
+        // 手指伸直判断
+        function isFingerExtended(landmarks, tipIdx, pipIdx) {
+            return landmarks[tipIdx].y < landmarks[pipIdx].y;
+        }
+
+        function onResults(results) {
+            document.getElementById('loading').style.display = 'none';
+            uiCtx.clearRect(0, 0, uiCanvas.width, uiCanvas.height);
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            // 1. 绘制粒子
+            if (particles.length > 0) {
+                for (let i = particles.length - 1; i >= 0; i--) {
+                    particles[i].update();
+                    particles[i].draw(canvasCtx);
+                    if (particles[i].alpha <= 0) particles.splice(i, 1);
+                }
+            }
+
+            // 2. 绘制笔迹
+            canvasCtx.save();
+            canvasCtx.translate(window.innerWidth/2, window.innerHeight/2);
+            canvasCtx.scale(settings.canvasScale, settings.canvasScale);
+            canvasCtx.translate(-window.innerWidth/2, -window.innerHeight/2);
+
+            strokes.forEach(stroke => {
+                canvasCtx.beginPath();
+                canvasCtx.strokeStyle = stroke.isEraser ? 'rgba(0,0,0,0.5)' : stroke.color;
+                
+                if (stroke.isEraser) {
+                    canvasCtx.globalCompositeOperation = 'destination-out'; // 真实的擦除
+                    canvasCtx.lineWidth = stroke.size * 4;
+                    canvasCtx.shadowBlur = 0;
+                } else {
+                    canvasCtx.globalCompositeOperation = 'source-over';
+                    canvasCtx.lineWidth = stroke.size;
+                    // 发光特效
+                    canvasCtx.shadowBlur = 15;
+                    canvasCtx.shadowColor = stroke.color;
+                }
+                
+                canvasCtx.lineCap = 'round';
+                canvasCtx.lineJoin = 'round';
+                
+                if (stroke.points.length > 0) {
+                    canvasCtx.moveTo(stroke.points[0].x, stroke.points[0].y);
+                    for (let j = 1; j < stroke.points.length; j++) {
+                        canvasCtx.lineTo(stroke.points[j].x, stroke.points[j].y);
+                    }
+                }
+                canvasCtx.stroke();
+            });
+            canvasCtx.restore();
+            canvasCtx.globalCompositeOperation = 'source-over'; // 重置混合模式
+
+            // 3. 手势识别
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                const screenIdx = toScreen(landmarks[8]);
+                const screenThumb = toScreen(landmarks[4]);
+                const screenMiddle = toScreen(landmarks[12]);
+                
+                // 绘制准星光标
+                drawCursor(uiCtx, screenIdx.x, screenIdx.y, settings.color);
+                
+                const pinchDist = distance(screenThumb, screenIdx);
+                const peaceDist = distance(screenIdx, screenMiddle);
+                
+                let gestureStr = "TRACKING";
+                statusMode.innerText = `MODE: ${settings.mode.toUpperCase()} ${settings.mode === 'pen' ? '🖊️' : '🧹'}`;
+
+                // 手掌检测 (Toggle Menu)
+                const isPalmOpen = isFingerExtended(landmarks, 8, 6) && 
+                                   isFingerExtended(landmarks, 12, 10) && 
+                                   isFingerExtended(landmarks, 16, 14) && 
+                                   isFingerExtended(landmarks, 20, 18) &&
+                                   distance(screenIdx, screenMiddle) > 40;
+
+                if (isPalmOpen) {
+                    const now = Date.now();
+                    if (now - lastMenuToggleTime > 1000) {
+                        isMenuOpen = !isMenuOpen;
+                        lastMenuToggleTime = now;
+                        uiPanel.classList.toggle('active', isMenuOpen);
+                    }
+                    gestureStr = "SYSTEM MENU";
+                    currentStroke = null;
+                }
+
+                if (isMenuOpen) {
+                    handleUIInteraction(screenIdx);
+                    gestureStr = "SELECTING...";
+                } else {
+                    // 剪刀手 (消散)
+                    const isPeaceSign = isFingerExtended(landmarks, 8, 6) && 
+                                        isFingerExtended(landmarks, 12, 10) &&
+                                        peaceDist > 60 && 
+                                        !isFingerExtended(landmarks, 16, 14) && 
+                                        !isFingerExtended(landmarks, 20, 18);
+
+                    if (isPeaceSign) {
+                        dissolveDrawing();
+                        gestureStr = "PROTOCOL: DISSOLVE";
+                    } 
+                    // 双手缩放
+                    else if (results.multiHandLandmarks.length === 2) {
+                        const hand2 = results.multiHandLandmarks[1];
+                        const idx1 = toScreen(landmarks[8]);
+                        const idx2 = toScreen(hand2[8]);
+                        const dist = distance(idx1, idx2);
+
+                        if (initialPinchDistance === null) {
+                            initialPinchDistance = dist;
+                            initialScale = settings.canvasScale;
+                        } else {
+                            const scaleFactor = dist / initialPinchDistance;
+                            settings.canvasScale = Math.max(0.1, Math.min(5, initialScale * scaleFactor));
+                        }
+                        gestureStr = "ZOOMING";
+                        
+                        // 绘制缩放连线
+                        uiCtx.beginPath();
+                        uiCtx.moveTo(idx1.x, idx1.y);
+                        uiCtx.lineTo(idx2.x, idx2.y);
+                        uiCtx.strokeStyle = '#00ffff';
+                        uiCtx.setLineDash([5, 5]);
+                        uiCtx.stroke();
+                        uiCtx.setLineDash([]);
+                    } else {
+                        initialPinchDistance = null;
+
+                        // 捏合写字
+                        if (pinchDist < 40) {
+                            gestureStr = settings.mode === 'pen' ? "WRITING" : "ERASING";
+                            
+                            const cx = window.innerWidth / 2;
+                            const cy = window.innerHeight / 2;
+                            const rawX = (screenIdx.x - cx) / settings.canvasScale + cx;
+                            const rawY = (screenIdx.y - cy) / settings.canvasScale + cy;
+
+                            if (!currentStroke) {
+                                currentStroke = {
+                                    points: [{x: rawX, y: rawY}],
+                                    color: settings.color,
+                                    size: settings.size,
+                                    isEraser: settings.mode === 'eraser'
+                                };
+                                strokes.push(currentStroke);
+                            } else {
+                                currentStroke.points.push({x: rawX, y: rawY});
+                            }
+                            
+                            // 捏合时的视觉反馈
+                            uiCtx.beginPath();
+                            uiCtx.arc(screenIdx.x, screenIdx.y, 15, 0, Math.PI*2);
+                            uiCtx.strokeStyle = settings.color;
+                            uiCtx.lineWidth = 2;
+                            uiCtx.stroke();
+
+                        } else {
+                            currentStroke = null;
+                        }
+                    }
+                }
+                statusGesture.innerText = gestureStr;
+            } else {
+                statusGesture.innerText = "NO TARGET";
+            }
+        }
+
+        // 绘制科幻光标
+        function drawCursor(ctx, x, y, color) {
+            ctx.shadowBlur = 5;
+            ctx.shadowColor = color;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2;
+            
+            // 外圈
+            ctx.beginPath();
+            ctx.arc(x, y, 10, 0, Math.PI * 2);
+            ctx.stroke();
+            
+            // 十字准星
+            ctx.beginPath();
+            ctx.moveTo(x - 15, y); ctx.lineTo(x - 5, y);
+            ctx.moveTo(x + 5, y); ctx.lineTo(x + 15, y);
+            ctx.moveTo(x, y - 15); ctx.lineTo(x, y - 5);
+            ctx.moveTo(x, y + 5); ctx.lineTo(x, y + 15);
+            ctx.stroke();
+            
+            ctx.shadowBlur = 0;
+        }
+
+        function handleUIInteraction(cursorPos) {
+            const buttons = document.querySelectorAll('.btn, .color-opt');
+            let foundHover = false;
+            
+            buttons.forEach(btn => {
+                const rect = btn.getBoundingClientRect();
+                if (cursorPos.x >= rect.left && cursorPos.x <= rect.right &&
+                    cursorPos.y >= rect.top && cursorPos.y <= rect.bottom) {
+                    
+                    foundHover = true;
+                    if (hoverTarget !== btn) {
+                        hoverTarget = btn;
+                        hoverStartTime = Date.now();
+                        document.querySelectorAll('.progress-bar').forEach(b => b.style.width = '0%');
+                    } else {
+                        const elapsed = Date.now() - hoverStartTime;
+                        const progress = Math.min(100, (elapsed / HOVER_THRESHOLD) * 100);
+                        const bar = btn.querySelector('.progress-bar');
+                        if (bar) bar.style.width = `${progress}%`;
+
+                        if (btn.classList.contains('color-opt')) {
+                            btn.style.transform = `skewX(-10deg) scale(${1 + progress/200})`;
+                        }
+
+                        if (elapsed >= HOVER_THRESHOLD) {
+                            triggerButtonAction(btn);
+                            hoverStartTime = Date.now();
+                            hoverTarget = null;
+                        }
+                    }
+                }
+            });
+
+            if (!foundHover) {
+                hoverTarget = null;
+                document.querySelectorAll('.progress-bar').forEach(b => b.style.width = '0%');
+                document.querySelectorAll('.color-opt').forEach(b => {
+                   if (!b.classList.contains('selected')) b.style.transform = 'skewX(-10deg) scale(1)';
+                });
+            }
+        }
+
+        function triggerButtonAction(btn) {
+            const action = btn.dataset.action;
+            const value = btn.dataset.value;
+
+            if (action === 'mode') {
+                settings.mode = value;
+                document.querySelectorAll('[data-action="mode"]').forEach(b => b.classList.remove('selected'));
+                btn.classList.add('selected');
+            } else if (action === 'color') {
+                settings.color = value;
+                settings.mode = 'pen'; 
+                document.querySelectorAll('.color-opt').forEach(b => {
+                    b.classList.remove('selected');
+                    b.style.transform = 'skewX(-10deg) scale(1)';
+                    b.style.boxShadow = 'none';
+                });
+                btn.classList.add('selected');
+                btn.style.boxShadow = `0 0 15px ${value}`;
+                document.querySelector('[data-value="pen"]').classList.add('selected');
+                document.querySelector('[data-value="eraser"]').classList.remove('selected');
+            } else if (action === 'size') {
+                if (value === 'up') settings.size = Math.min(40, settings.size + 2);
+                if (value === 'down') settings.size = Math.max(2, settings.size - 2);
+                updateSizeSlider();
+            }
+        }
+
+        function updateSizeSlider() {
+            const fill = document.getElementById('size-fill');
+            fill.style.width = (settings.size / 40 * 100) + '%';
+        }
+
+        function dissolveDrawing() {
+            if (strokes.length === 0) return;
+            strokes.forEach(stroke => {
+                for (let i = 0; i < stroke.points.length; i+=2) {
+                    const p = stroke.points[i];
+                    particles.push(new Particle(p.x, p.y, stroke.isEraser ? '#ffffff' : stroke.color));
+                }
+            });
+            strokes = [];
+        }
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+        hands.onResults(onResults);
+        
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 1280, height: 720
+        });
+        camera.start();
+
+    </script>
+</body>
+</html>
